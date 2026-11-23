@@ -1,0 +1,226 @@
+POTHOLE DETECTION ON ROS 2 JAZZY — SETUP AND OPERATOR GUIDE
+===========================================================
+
+This guide starts from a fresh Ubuntu login and installs the ROS 2 node,
+Ultralytics/PyTorch dependencies, and the local Linux dashboard. The intended
+platform is Ubuntu 24.04 LTS (Noble) on amd64 or arm64 with ROS 2 Jazzy.
+PyTorch installation and inference speed vary by CPU/GPU. Start with CPU
+inference, then install a hardware-specific PyTorch build if needed.
+
+WHAT THIS PACKAGE DOES
+----------------------
+Camera Image topic (sensor_msgs/msg/Image)
+        -> convert to mono8 grayscale -> model inference (maximum 5 FPS)
+        -> JSON detections (std_msgs/msg/String)
+
+The result JSON includes frame/time, bounding boxes, confidence and two
+placeholder distance fields. Distances are null and uncalibrated until you
+implement the calibration described below. The dashboard shows a live annotated
+preview, frame/inference status, process memory/system load, detection results,
+and lets you change both ROS topics at runtime.
+
+1. LOG IN AND CHECK UBUNTU
+--------------------------
+Log into the rover's Ubuntu desktop, or connect over SSH. Open a terminal and
+check that this is Ubuntu 24.04:
+
+    lsb_release -a
+    uname -m
+
+If using SSH, replace <user> and <rover-address> with your login and rover IP:
+
+    ssh <user>@<rover-address>
+
+2. SET LOCALE AND INSTALL ROS 2 JAZZY
+-------------------------------------
+Run these commands in the Ubuntu terminal. They add the official ROS 2 apt
+repository and install the ROS base, build tools, and image bridge packages.
+
+    sudo apt update
+    sudo apt install -y locales software-properties-common curl gnupg lsb-release
+    sudo locale-gen en_US en_US.UTF-8
+    sudo update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+    export LANG=en_US.UTF-8
+    sudo add-apt-repository -y universe
+    sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+    sudo apt update
+    sudo apt install -y ros-jazzy-ros-base python3-colcon-common-extensions python3-rosdep python3-vcstool python3-pip python3-venv python3-opencv ros-jazzy-cv-bridge
+    sudo rosdep init 2>/dev/null || true
+    rosdep update
+
+For a graphical Ubuntu installation you may use ros-jazzy-desktop instead of
+ros-jazzy-ros-base. This application does not require RViz.
+
+3. CREATE A WORKSPACE AND GET THIS PROJECT
+------------------------------------------
+If the project has already been copied onto the rover, place its repository
+folder under ~/rover_ws/src and skip the clone command. Otherwise:
+
+    mkdir -p ~/rover_ws/src
+    cd ~/rover_ws/src
+    git clone https://github.com/DaeAnuj25/Holes_detection.git pothole_detection
+
+The model file new_model.pt must be in the package root next to package.xml.
+Confirm the essential files exist:
+
+    ls -lh ~/rover_ws/src/pothole_detection/new_model.pt
+    ls ~/rover_ws/src/pothole_detection/package.xml
+
+4. INSTALL PYTHON MODEL DEPENDENCIES
+------------------------------------
+ROS 2 Jazzy on Ubuntu 24.04 uses Python 3.12. Use a virtual environment that
+can still see the ROS apt-installed Python modules. Do not use a venv without
+--system-site-packages; it will hide rclpy and cv_bridge.
+
+    source /opt/ros/jazzy/setup.bash
+    cd ~/rover_ws
+    python3 -m venv --system-site-packages .venv
+    source .venv/bin/activate
+    python -m pip install --upgrade pip
+    python -m pip install -r src/pothole_detection/requirements.txt
+
+The requirements pin NumPy below 2 for compatibility with the ROS image bridge.
+The default PyTorch wheel is CPU-capable. For NVIDIA acceleration, install a
+PyTorch build matched to the rover's CUDA/driver using PyTorch's official
+selector, then verify it in this same environment. Do not install arbitrary
+CUDA wheels on the rover without checking driver compatibility.
+
+Optional sanity check:
+
+    python -c "import rclpy, cv_bridge, cv2, torch, ultralytics; print('ROS/model imports OK; torch', torch.__version__)"
+
+5. BUILD THE ROS PACKAGE
+------------------------
+Keep the ROS environment and the venv active in this terminal:
+
+    cd ~/rover_ws
+    colcon build --symlink-install --packages-select pothole_detection
+    source install/local_setup.bash
+
+For every new terminal, run:
+
+    source /opt/ros/jazzy/setup.bash
+    source ~/rover_ws/.venv/bin/activate
+    source ~/rover_ws/install/local_setup.bash
+
+To automatically set up interactive terminals, append the three source
+commands above to ~/.bashrc (one per line), then open a new terminal. If you
+build before installing requirements, build again after installing them.
+
+6. CHECK THE CAMERA TOPIC
+-------------------------
+Start the camera driver in another sourced terminal. The node accepts
+sensor_msgs/msg/Image topics (including the common raw camera topic). List
+available topics and types:
+
+    ros2 topic list -t
+    ros2 topic info /camera/image_raw
+    ros2 topic hz /camera/image_raw
+
+Replace /camera/image_raw below with the actual topic. The Image subscription
+uses the ROS sensor-data QoS (best-effort/reliable-compatible). The detector
+will process no faster than five frames per second; incoming frames between
+processing slots are skipped. It does not resize/crop images before inference.
+
+7. START MODEL NODE AND DASHBOARD
+---------------------------------
+In a terminal with ROS, venv, and workspace sourced:
+
+    ros2 launch pothole_detection pothole_detector.launch.py
+
+Optional launch arguments:
+
+    ros2 launch pothole_detection pothole_detector.launch.py image_topic:=/front_camera/image_raw detections_topic:=/rover/potholes confidence_threshold:=0.30
+
+To use another model file:
+
+    ros2 launch pothole_detection pothole_detector.launch.py model_path:=/absolute/path/to/model.pt
+
+Open the Linux browser on the rover and visit:
+
+    http://127.0.0.1:8080
+
+The default dashboard binds to localhost only. For a dashboard on your own
+computer when connected by SSH, use an SSH tunnel from that computer:
+
+    ssh -L 8080:127.0.0.1:8080 <user>@<rover-address>
+
+Then open http://127.0.0.1:8080 locally. To expose it on a trusted LAN, launch
+with dashboard_host:=0.0.0.0 and dashboard_port:=8080, and restrict access with
+your firewall. The dashboard has no authentication; do not expose it to an
+untrusted network or the public internet.
+
+The dashboard can select an Image topic from the discovered ROS graph or you
+can type an absolute topic name. Set an absolute output topic and press Apply.
+The output is a std_msgs/msg/String containing one JSON object per processed
+frame (also published when no holes are detected). Check it from a ROS terminal:
+
+    ros2 topic echo /pothole/detections
+    ros2 topic info /pothole/detections
+
+Example output shape:
+
+    {
+      "stamp":"2026-01-01T12:00:00+00:00",
+      "frame_id":"camera_optical_frame",
+      "image":{"width":640,"height":480,"encoding_used_for_inference":"grayscale replicated to 3 channels"},
+      "processing_ms":42.0,
+      "distance_note":"Distances are uncalibrated placeholders (null).",
+      "detections":[{
+        "class_id":0,"class_name":"pothole","confidence":0.91,
+        "bbox_xyxy_px":[120.0,180.0,240.0,270.0],"center_px":[180.0,225.0],
+        "distance":{"camera_m":null,"rover_m":null,"calibrated":false,"method":"placeholder"}
+      }]
+    }
+
+The precise class names and output depend on the trained model. Confirm its
+label mapping with your training/export workflow. The model is loaded using the
+Ultralytics YOLO Python API; an incompatible checkpoint or missing custom
+training modules will be reported at startup.
+
+8. DISTANCE CALIBRATION — FUTURE WORK
+-------------------------------------
+The inference code calls pothole_detection/distance.py:DistanceEstimator once
+per detection. It receives a bounding box (x1,y1,x2,y2) in pixels and image
+shape, then returns distinct camera_m and rover_m fields. The current estimator
+returns null values with calibrated=false; null is deliberate, not a measured
+zero. Replace its estimate() implementation with the rover's calibration logic
+without changing the ROS message/dashboard flow.
+
+Recommended calibration workflow:
+  1. Fix and document camera height, pitch/roll, lens, resolution, and camera
+     mounting position relative to the rover reference point. Keep these fixed.
+  2. Capture images with objects/targets at surveyed distances on the same
+     ground plane and under representative camera settings. Record camera-to-
+     target and rover-reference-to-target distances separately.
+  3. Record each target's pixel center/size and its known distances. Use enough
+     samples across the image (especially vertical pixel position) to fit and
+     validate a mapping; account for lens distortion and uneven terrain.
+  4. Implement the mapping in DistanceEstimator, return values in metres and
+     set calibrated=true plus a descriptive method string. Add unit tests and
+     validate against held-out known distances before using results for control.
+
+A fixed camera alone does not make arbitrary terrain depth recoverable from a
+single image. The mapping may only be valid for the calibrated ground plane;
+obstacles, slopes, lens changes, and camera movement can invalidate it. This
+node is not a safety-rated obstacle avoidance or braking system.
+
+9. STOPPING, LOGS, AND TROUBLESHOOTING
+-------------------------------------
+Stop the node with Ctrl+C. Useful checks:
+
+  * No camera image: ros2 topic list -t; check camera driver, topic spelling,
+    message type, and QoS. Dashboard topic suggestions are Image topics visible
+    in the node's ROS domain.
+  * No detections: inspect /pothole/detections; check model labels, confidence
+    threshold, grayscale training assumptions, and lighting. Empty detections
+    are still published for processed frames.
+  * Import/model error: activate the ROS-sourced venv; rerun the Python import
+    sanity check; make sure the exact checkpoint file exists and is readable.
+  * Dashboard port in use: launch with dashboard_port:=8081 and open port 8081.
+  * ROS topic does not update: confirm absolute topic names, click Apply, and
+    check the node terminal for its "Topics set" log.
+  * Slow inference: inspect dashboard inference time and system load. The node
+    enforces a maximum rate, not a guaranteed sustained 5 FPS; actual throughput
+    depends on input resolution, model, and hardware.
