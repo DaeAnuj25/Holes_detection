@@ -110,9 +110,10 @@ build before installing requirements, build again after installing them.
 
 6. CHECK THE CAMERA TOPIC
 -------------------------
-Start the camera driver in another sourced terminal. The node accepts
-sensor_msgs/msg/Image topics (including the common raw camera topic). List
-available topics and types:
+Start the real camera driver in another sourced terminal, or use the standalone
+test publisher described in section 6a if no rover camera is connected. The node
+accepts sensor_msgs/msg/Image topics (including the common raw camera topic).
+List available topics and types:
 
     ros2 topic list -t
     ros2 topic info /camera/image_raw
@@ -122,6 +123,53 @@ Replace /camera/image_raw below with the actual topic. The Image subscription
 uses the ROS sensor-data QoS (best-effort/reliable-compatible). The detector
 will process no faster than five frames per second; incoming frames between
 processing slots are skipped. It does not resize/crop images before inference.
+
+6a. TEST WITHOUT A CAMERA: IMAGE / VIDEO / WEBCAM PUBLISHER
+----------------------------------------------------------
+The package includes a standalone test_image_publisher node. It publishes only
+standard sensor_msgs/msg/Image messages; the detector and dashboard do not
+know whether frames came from this test tool or a real camera driver. This
+keeps the test publisher independent and easy to replace later.
+
+Open a separate terminal (Terminal A), source ROS, venv, and workspace as in
+section 5, then publish a looping local video at 15 FPS:
+
+    ros2 run pothole_detection test_image_publisher --ros-args -p source:=/absolute/path/to/rough-road.mp4 -p topic:=/camera/image_raw -p publish_rate:=15.0
+
+Replace the example path with a video file available on the rover. The file
+loops continuously. The default publish rate is 15 FPS and the default topic
+is /camera/image_raw. You can also publish a single image repeatedly:
+
+    ros2 run pothole_detection test_image_publisher --ros-args -p source:=/absolute/path/to/pothole.jpg
+
+Or cycle through the images in a folder (non-recursive, sorted by filename):
+
+    ros2 run pothole_detection test_image_publisher --ros-args -p source:=/absolute/path/to/image_folder -p publish_rate:=10.0
+
+To use the first webcam, leave source unset and set webcam_index instead:
+
+    ros2 run pothole_detection test_image_publisher --ros-args -p webcam_index:=0 -p publish_rate:=20.0
+
+A USB webcam may require local camera permissions or selection of another
+index (1, 2, ...). `source` and `webcam_index` are mutually exclusive. All
+sources publish using sensor-data QoS; video, image folders, and single images
+repeat/loop, while a webcam is read as live frames. Press Ctrl+C to stop.
+
+In a second sourced terminal (Terminal B), start the unchanged detector and
+its dashboard as shown in section 7. Verify the synthetic camera topic and
+output stream from a third terminal if desired:
+
+    ros2 topic hz /camera/image_raw
+    ros2 topic echo /pothole/detections
+
+At a 15 FPS test input, `ros2 topic hz` should show the higher publisher rate
+while the detector's dashboard reports its 5 FPS processing limit (the model's
+actual inference throughput can be lower on slow hardware). Open
+http://127.0.0.1:8080 to see the preview and detections. Both terminals must
+use the same ROS_DOMAIN_ID and sourced ROS/workspace environment. Stop the test
+publisher with Ctrl+C before switching to the real camera driver, and point the
+existing detector at the real camera's Image topic; no model or dashboard code
+needs to change.
 
 7. START MODEL NODE AND DASHBOARD
 ---------------------------------

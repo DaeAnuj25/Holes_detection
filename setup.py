@@ -22,6 +22,7 @@ setup(
     entry_points={
         'console_scripts': [
             'pothole_detector = pothole_detection.node:main',
+            'test_image_publisher = pothole_detection.test_image_publisher:main',
         ],
     },
 )
